@@ -9,7 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 import dotenv from 'dotenv';
 import {Command, Argument, Option} from 'commander';
-import {LogLevel, setLogLevel, BaseArtifactService, GcsArtifactService} from '@google/adk';
+import {LogLevel, setLogLevel, BaseArtifactService, GcsArtifactService, PostgresSessionService, PostgresArtifactService} from '@google/adk';
 import {AdkWebServer} from '../server/adk_web_server.js';
 import {runAgent} from './cli_run.js';
 import {deployToCloudRun} from './cli_deploy.js';
@@ -52,6 +52,47 @@ function getArtifactServiceFromUri(uri: string): BaseArtifactService {
   throw new Error(`Unsupported artifact service URI: ${uri}`);
 }
 
+/**
+ * Checks if PostgreSQL environment variables are set and returns PostgreSQL services if available.
+ * This allows automatic use of PostgreSQL for session/artifact storage when env vars are configured.
+ */
+function getPostgresServicesIfConfigured(): {
+  sessionService?: PostgresSessionService;
+  artifactService?: PostgresArtifactService;
+} {
+  const dbUrl = process.env.DBURL;
+  const dbUser = process.env.DBUSER;
+  const dbPassword = process.env.DBPASSWORD;
+
+  console.log('[ADK CLI Debug] Environment check:', {
+    hasDBURL: !!dbUrl,
+    hasDBUSER: !!dbUser,
+    hasDBPASSWORD: !!dbPassword,
+    DBURL: dbUrl ? `${dbUrl.substring(0, 20)}...` : 'undefined',
+  });
+
+  if (dbUrl && dbUser && dbPassword) {
+    console.log('[ADK CLI] PostgreSQL configuration detected - using PostgreSQL for sessions and artifacts');
+    const dbConfig = {
+      dbUrl,
+      dbUser,
+      dbPassword,
+    };
+    console.log('[ADK CLI Debug] Creating Postgres services with config:', {
+      dbUrl: dbUrl.substring(0, 30) + '...',
+      dbUser,
+      hasPassword: !!dbPassword,
+    });
+    return {
+      sessionService: new PostgresSessionService(dbConfig),
+      artifactService: new PostgresArtifactService(dbConfig),
+    };
+  }
+
+  console.log('[ADK CLI] No PostgreSQL config detected - using in-memory services');
+  return {};
+}
+
 const AGENT_DIR_ARGUMENT =
     new Argument(
         '[agents_dir]',
@@ -92,15 +133,20 @@ program.command('web')
     .action((agentsDir: string, options: Record<string, string>) => {
       setLogLevel(getLogLevelFromOptions(options));
 
+      // Check for PostgreSQL configuration in environment variables
+      const pgServices = getPostgresServicesIfConfigured();
+
       const server = new AdkWebServer({
         agentsDir: getAbsolutePath(agentsDir),
         host: options['host'],
         port: parseInt(options['port'], 10),
         serveDebugUI: true,
         allowOrigins: options['allow_origins'],
-        artifactService: options['artifact_service_uri'] ?
+        // Use PostgreSQL services if configured, otherwise explicit artifact service if provided
+        sessionService: pgServices.sessionService,
+        artifactService: pgServices.artifactService || (options['artifact_service_uri'] ?
             getArtifactServiceFromUri(options['artifact_service_uri']) :
-            undefined,
+            undefined),
       });
 
       server.start();
@@ -118,15 +164,20 @@ program.command('api_server')
     .action((agentsDir: string, options: Record<string, string>) => {
       setLogLevel(getLogLevelFromOptions(options));
 
+      // Check for PostgreSQL configuration in environment variables
+      const pgServices = getPostgresServicesIfConfigured();
+
       const server = new AdkWebServer({
         agentsDir: getAbsolutePath(agentsDir),
         host: options['host'],
         port: parseInt(options['port'], 10),
         serveDebugUI: false,
         allowOrigins: options['allow_origins'],
-        artifactService: options['artifact_service_uri'] ?
+        // Use PostgreSQL services if configured, otherwise explicit artifact service if provided
+        sessionService: pgServices.sessionService,
+        artifactService: pgServices.artifactService || (options['artifact_service_uri'] ?
             getArtifactServiceFromUri(options['artifact_service_uri']) :
-            undefined,
+            undefined),
       });
     server.start();
   });
