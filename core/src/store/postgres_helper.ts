@@ -212,21 +212,19 @@ export class PostgresHelper {
   }
 
   /**
-   * Initialize the sessions table.
+   * Initialize the sessions table (normalized schema).
    */
   public async initializeSessionsTable(
     tableName = 'sessions'
   ): Promise<void> {
     const createTableQuery = `
       CREATE TABLE IF NOT EXISTS ${tableName} (
+        id VARCHAR(255) PRIMARY KEY,
         app_name VARCHAR(255) NOT NULL,
         user_id VARCHAR(255) NOT NULL,
-        session_id VARCHAR(255) NOT NULL,
         state JSONB,
-        events JSONB,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (app_name, user_id, session_id)
+        last_update_time TIMESTAMP NOT NULL,
+        event_data JSONB
       )
     `;
 
@@ -242,6 +240,81 @@ export class PostgresHelper {
       await this.query(createIndexQuery);
     } catch (error) {
       logger.error('Failed to initialize sessions table', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize the events table (normalized schema).
+   */
+  public async initializeEventsTable(tableName = 'events'): Promise<void> {
+    const createTableQuery = `
+      CREATE TABLE IF NOT EXISTS ${tableName} (
+        id VARCHAR(255) PRIMARY KEY,
+        session_id VARCHAR(255) NOT NULL,
+        author VARCHAR(255),
+        actions_state_delta JSONB,
+        actions_artifact_delta JSONB,
+        actions_requested_auth_configs JSONB,
+        actions_transfer_to_agent VARCHAR(255),
+        content_role VARCHAR(50),
+        timestamp BIGINT NOT NULL,
+        invocation_id VARCHAR(255),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      )
+    `;
+
+    try {
+      await this.query(createTableQuery);
+      logger.info(`Events table '${tableName}' initialized`);
+
+      // Create index for faster session event queries
+      const createIndexQuery = `
+        CREATE INDEX IF NOT EXISTS idx_${tableName}_session_timestamp 
+        ON ${tableName} (session_id, timestamp)
+      `;
+      await this.query(createIndexQuery);
+    } catch (error) {
+      logger.error('Failed to initialize events table', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize the event_content_parts table.
+   * Multiple parts overwrite each other - storing only the last part.
+   */
+  public async initializeEventContentPartsTable(
+    tableName = 'event_content_parts'
+  ): Promise<void> {
+    const createTableQuery = `
+      CREATE TABLE IF NOT EXISTS ${tableName} (
+        event_id VARCHAR(255) PRIMARY KEY,
+        session_id VARCHAR(255) NOT NULL,
+        part_type VARCHAR(50) NOT NULL,
+        text_content TEXT,
+        function_call_id VARCHAR(255),
+        function_call_name VARCHAR(255),
+        function_call_args JSONB,
+        function_response_id VARCHAR(255),
+        function_response_name VARCHAR(255),
+        function_response_data JSONB,
+        FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+      )
+    `;
+
+    try {
+      await this.query(createTableQuery);
+      logger.info(`Event content parts table '${tableName}' initialized`);
+
+      // Create index for faster event parts queries
+      const createIndexQuery = `
+        CREATE INDEX IF NOT EXISTS idx_${tableName}_event 
+        ON ${tableName} (event_id)
+      `;
+      await this.query(createIndexQuery);
+    } catch (error) {
+      logger.error('Failed to initialize event content parts table', error);
       throw error;
     }
   }
@@ -275,5 +348,30 @@ export class PostgresHelper {
       idleCount: this.pool.idleCount,
       waitingCount: this.pool.waitingCount,
     };
+  }
+
+  /**
+   * Execute a function within a database transaction.
+   * Automatically handles commit on success and rollback on error.
+   * 
+   * @param callback Function to execute within transaction
+   * @returns Result of the callback function
+   */
+  public async withTransaction<T>(
+    callback: (client: pg.PoolClient) => Promise<T>
+  ): Promise<T> {
+    const client = await this.getClient();
+    try {
+      await client.query('BEGIN');
+      const result = await callback(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error('Transaction rolled back due to error', error);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }

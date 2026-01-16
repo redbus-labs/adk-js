@@ -65,11 +65,13 @@ export class PostgresSessionService extends BaseSessionService {
   }
 
   /**
-   * Ensures the sessions table is initialized.
+   * Ensures all tables are initialized.
    */
   private async ensureInitialized(): Promise<void> {
     if (!this.initialized) {
-      await this.dbHelper.initializeSessionsTable(this.tableName);
+      await this.dbHelper.initializeSessionsTable('sessions');
+      await this.dbHelper.initializeEventsTable('events');
+      await this.dbHelper.initializeEventContentPartsTable('event_content_parts');
       this.initialized = true;
     }
   }
@@ -91,26 +93,32 @@ export class PostgresSessionService extends BaseSessionService {
       lastUpdateTime: Date.now(),
     });
 
+    // Use normalized schema: id as PK, event_data as summary
+    const eventDataJson = {
+      events: JSON.stringify(session.events)
+    };
+
     const query = `
       INSERT INTO ${this.tableName} 
-        (app_name, user_id, session_id, state, events, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, to_timestamp($6 / 1000.0), to_timestamp($7 / 1000.0))
-      ON CONFLICT (app_name, user_id, session_id) 
+        (id, app_name, user_id, state, last_update_time, event_data)
+      VALUES ($1, $2, $3, $4::jsonb, to_timestamp($5 / 1000.0), $6::jsonb)
+      ON CONFLICT (id) 
       DO UPDATE SET 
+        app_name = EXCLUDED.app_name,
+        user_id = EXCLUDED.user_id,
         state = EXCLUDED.state,
-        events = EXCLUDED.events,
-        updated_at = EXCLUDED.updated_at
+        last_update_time = EXCLUDED.last_update_time,
+        event_data = EXCLUDED.event_data
     `;
 
     try {
       await this.dbHelper.query(query, [
+        session.id,
         appName,
         userId,
-        session.id,
         JSON.stringify(session.state),
-        JSON.stringify(session.events),
         session.lastUpdateTime,
-        session.lastUpdateTime,
+        JSON.stringify(eventDataJson),
       ]);
 
       logger.info(`Created session ${session.id} for user ${userId}`);
@@ -129,35 +137,128 @@ export class PostgresSessionService extends BaseSessionService {
   }: GetSessionRequest): Promise<Session | undefined> {
     await this.ensureInitialized();
 
-    const query = `
-      SELECT session_id, app_name, user_id, state, events, 
-             EXTRACT(EPOCH FROM updated_at) * 1000 as last_update_time
+    // First, get the session metadata
+    const sessionQuery = `
+      SELECT id, app_name, user_id, state,
+             EXTRACT(EPOCH FROM last_update_time) * 1000 as last_update_time
       FROM ${this.tableName}
-      WHERE app_name = $1 AND user_id = $2 AND session_id = $3
+      WHERE id = $1 AND app_name = $2 AND user_id = $3
     `;
 
     try {
-      const result = await this.dbHelper.query<{
-        session_id: string;
+      const sessionResult = await this.dbHelper.query<{
+        id: string;
         app_name: string;
         user_id: string;
-        state: any; // JSONB returns as object, not string
-        events: any; // JSONB returns as object, not string
+        state: any;
         last_update_time: number;
-      }>(query, [appName, userId, sessionId]);
+      }>(sessionQuery, [sessionId, appName, userId]);
 
-      if (result.rows.length === 0) {
+      if (sessionResult.rows.length === 0) {
         return undefined;
       }
 
-      const row = result.rows[0];
-      // PostgreSQL JSONB fields are already parsed as objects
-      let events: Event[] = typeof row.events === 'string' 
-        ? JSON.parse(row.events) 
-        : row.events;
-      const state = typeof row.state === 'string' 
-        ? JSON.parse(row.state) 
-        : row.state;
+      const sessionRow = sessionResult.rows[0];
+      const state = typeof sessionRow.state === 'string' 
+        ? JSON.parse(sessionRow.state) 
+        : sessionRow.state;
+
+      // Now reconstruct events from normalized tables with JOIN
+      const eventsQuery = `
+        SELECT 
+          e.id,
+          e.session_id,
+          e.author,
+          e.actions_state_delta,
+          e.actions_artifact_delta,
+          e.actions_requested_auth_configs,
+          e.actions_transfer_to_agent,
+          e.content_role,
+          e.timestamp,
+          e.invocation_id,
+          p.part_type,
+          p.text_content,
+          p.function_call_id,
+          p.function_call_name,
+          p.function_call_args,
+          p.function_response_id,
+          p.function_response_name,
+          p.function_response_data
+        FROM events e
+        LEFT JOIN event_content_parts p ON e.id = p.event_id
+        WHERE e.session_id = $1
+        ORDER BY e.timestamp ASC
+      `;
+
+      const eventsResult = await this.dbHelper.query<{
+        id: string;
+        session_id: string;
+        author: string | null;
+        actions_state_delta: any;
+        actions_artifact_delta: any;
+        actions_requested_auth_configs: any;
+        actions_transfer_to_agent: string | null;
+        content_role: string | null;
+        timestamp: number;
+        invocation_id: string;
+        part_type: string | null;
+        text_content: string | null;
+        function_call_id: string | null;
+        function_call_name: string | null;
+        function_call_args: any;
+        function_response_id: string | null;
+        function_response_name: string | null;
+        function_response_data: any;
+      }>(eventsQuery, [sessionId]);
+
+      // Reconstruct Event objects from normalized data
+      let events: Event[] = eventsResult.rows.map((row) => {
+        // Reconstruct content part (only one part per event due to Java schema)
+        const parts: any[] = [];
+        
+        if (row.part_type) {
+          const part: any = {};
+          
+          if (row.part_type === 'text' && row.text_content) {
+            part.text = row.text_content;
+          } else if (row.part_type === 'functionCall') {
+            part.functionCall = {
+              id: row.function_call_id,
+              name: row.function_call_name,
+              args: row.function_call_args,
+            };
+          } else if (row.part_type === 'functionResponse') {
+            part.functionResponse = {
+              id: row.function_response_id,
+              name: row.function_response_name,
+              response: row.function_response_data,
+            };
+          }
+          
+          parts.push(part);
+        }
+
+        // Reconstruct event
+        const event: Event = {
+          id: row.id,
+          invocationId: row.invocation_id,
+          author: row.author || undefined,
+          timestamp: row.timestamp,
+          actions: {
+            stateDelta: row.actions_state_delta || {},
+            artifactDelta: row.actions_artifact_delta || {},
+            requestedAuthConfigs: row.actions_requested_auth_configs || {},
+            requestedToolConfirmations: {},
+            transferToAgent: row.actions_transfer_to_agent || undefined,
+          },
+          content: parts.length > 0 ? {
+            role: row.content_role || undefined,
+            parts,
+          } : undefined,
+        };
+
+        return event;
+      });
 
       // Apply config filters if provided
       if (config) {
@@ -170,12 +271,12 @@ export class PostgresSessionService extends BaseSessionService {
       }
 
       const session = createSession({
-        id: row.session_id,
-        appName: row.app_name,
-        userId: row.user_id,
+        id: sessionRow.id,
+        appName: sessionRow.app_name,
+        userId: sessionRow.user_id,
         state,
         events,
-        lastUpdateTime: row.last_update_time,
+        lastUpdateTime: sessionRow.last_update_time,
       });
 
       return session;
@@ -192,16 +293,16 @@ export class PostgresSessionService extends BaseSessionService {
     await this.ensureInitialized();
 
     const query = `
-      SELECT session_id, app_name, user_id, 
-             EXTRACT(EPOCH FROM updated_at) * 1000 as last_update_time
+      SELECT id, app_name, user_id, 
+             EXTRACT(EPOCH FROM last_update_time) * 1000 as last_update_time
       FROM ${this.tableName}
       WHERE app_name = $1 AND user_id = $2
-      ORDER BY updated_at DESC
+      ORDER BY last_update_time DESC
     `;
 
     try {
       const result = await this.dbHelper.query<{
-        session_id: string;
+        id: string;
         app_name: string;
         user_id: string;
         last_update_time: number;
@@ -209,7 +310,7 @@ export class PostgresSessionService extends BaseSessionService {
 
       const sessions = result.rows.map((row) =>
         createSession({
-          id: row.session_id,
+          id: row.id,
           appName: row.app_name,
           userId: row.user_id,
           state: {},
@@ -232,13 +333,14 @@ export class PostgresSessionService extends BaseSessionService {
   }: DeleteSessionRequest): Promise<void> {
     await this.ensureInitialized();
 
+    // Delete by session ID (CASCADE will handle events and parts)
     const query = `
       DELETE FROM ${this.tableName}
-      WHERE app_name = $1 AND user_id = $2 AND session_id = $3
+      WHERE id = $1
     `;
 
     try {
-      await this.dbHelper.query(query, [appName, userId, sessionId]);
+      await this.dbHelper.query(query, [sessionId]);
       logger.info(`Deleted session ${sessionId} for user ${userId}`);
     } catch (error) {
       logger.error('Failed to delete session', error);
@@ -256,22 +358,104 @@ export class PostgresSessionService extends BaseSessionService {
     await super.appendEvent({session, event});
     session.lastUpdateTime = event.timestamp;
 
-    // Persist to database
-    const query = `
-      UPDATE ${this.tableName}
-      SET state = $1, events = $2, updated_at = to_timestamp($3 / 1000.0)
-      WHERE app_name = $4 AND user_id = $5 AND session_id = $6
-    `;
-
+    // Use transaction to ensure atomicity across all 3 tables
     try {
-      await this.dbHelper.query(query, [
-        JSON.stringify(session.state),
-        JSON.stringify(session.events),
-        session.lastUpdateTime,
-        session.appName,
-        session.userId,
-        session.id,
-      ]);
+      await this.dbHelper.withTransaction(async (client) => {
+        // 1. Update sessions table with new state and event_data summary
+        const eventDataJson = {
+          events: JSON.stringify(session.events)
+        };
+
+        await client.query(
+          `UPDATE ${this.tableName}
+           SET state = $1::jsonb, 
+               last_update_time = to_timestamp($2 / 1000.0),
+               event_data = $3::jsonb
+           WHERE id = $4`,
+          [
+            JSON.stringify(session.state),
+            session.lastUpdateTime,
+            JSON.stringify(eventDataJson),
+            session.id,
+          ]
+        );
+
+        // 2. Insert into events table
+        await client.query(
+          `INSERT INTO events (
+             id, session_id, author, 
+             actions_state_delta, actions_artifact_delta,
+             actions_requested_auth_configs, actions_transfer_to_agent,
+             content_role, timestamp, invocation_id
+           ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9, $10)
+           ON CONFLICT (id) DO UPDATE SET
+             session_id = EXCLUDED.session_id,
+             author = EXCLUDED.author,
+             actions_state_delta = EXCLUDED.actions_state_delta,
+             actions_artifact_delta = EXCLUDED.actions_artifact_delta,
+             actions_requested_auth_configs = EXCLUDED.actions_requested_auth_configs,
+             actions_transfer_to_agent = EXCLUDED.actions_transfer_to_agent,
+             content_role = EXCLUDED.content_role,
+             timestamp = EXCLUDED.timestamp,
+             invocation_id = EXCLUDED.invocation_id`,
+          [
+            event.id,
+            session.id,
+            event.author || null,
+            JSON.stringify(event.actions.stateDelta || {}),
+            JSON.stringify(event.actions.artifactDelta || {}),
+            JSON.stringify(event.actions.requestedAuthConfigs || {}),
+            event.actions.transferToAgent || null,
+            event.content?.role || null,
+            event.timestamp,
+            event.invocationId,
+          ]
+        );
+
+        // 3. Insert content parts into event_content_parts table
+        // Note: Matches Java implementation which uses ON CONFLICT (event_id) DO UPDATE
+        // This means only the last part is stored if there are multiple parts
+        if (event.content?.parts && event.content.parts.length > 0) {
+          for (const part of event.content.parts) {
+            // Determine part type
+            const partType = part.text !== undefined ? 'text'
+              : part.functionCall ? 'functionCall'
+              : part.functionResponse ? 'functionResponse'
+              : 'unknown';
+
+            await client.query(
+              `INSERT INTO event_content_parts (
+                 event_id, session_id, part_type,
+                 text_content,
+                 function_call_id, function_call_name, function_call_args,
+                 function_response_id, function_response_name, function_response_data
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::jsonb)
+               ON CONFLICT (event_id) DO UPDATE SET
+                 session_id = EXCLUDED.session_id,
+                 part_type = EXCLUDED.part_type,
+                 text_content = EXCLUDED.text_content,
+                 function_call_id = EXCLUDED.function_call_id,
+                 function_call_name = EXCLUDED.function_call_name,
+                 function_call_args = EXCLUDED.function_call_args,
+                 function_response_id = EXCLUDED.function_response_id,
+                 function_response_name = EXCLUDED.function_response_name,
+                 function_response_data = EXCLUDED.function_response_data`,
+              [
+                event.id,
+                session.id,
+                partType,
+                part.text || null,
+                part.functionCall?.id || null,
+                part.functionCall?.name || null,
+                part.functionCall?.args ? JSON.stringify(part.functionCall.args) : null,
+                part.functionResponse?.id || null,
+                part.functionResponse?.name || null,
+                part.functionResponse?.response ? JSON.stringify(part.functionResponse.response) : null,
+              ]
+            );
+          }
+        }
+      });
 
       logger.debug(
         `Appended event to session ${session.id}, total events: ${session.events.length}`
