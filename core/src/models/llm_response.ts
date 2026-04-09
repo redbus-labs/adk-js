@@ -4,7 +4,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {Content, FinishReason, GenerateContentResponse, GenerateContentResponseUsageMetadata, GroundingMetadata, LiveServerSessionResumptionUpdate, Transcription,} from '@google/genai';
+import {
+  CitationMetadata,
+  Content,
+  FinishReason,
+  GenerateContentResponse,
+  GenerateContentResponseUsageMetadata,
+  GroundingMetadata,
+  LiveServerSessionResumptionUpdate,
+  Transcription,
+} from '@google/genai';
 
 /**
  * LLM response class that provides the first candidate response from the
@@ -20,6 +29,11 @@ export interface LlmResponse {
    * The grounding metadata of the response.
    */
   groundingMetadata?: GroundingMetadata;
+
+  /**
+   * The citation metadata of the response.
+   */
+  citationMetadata?: CitationMetadata;
 
   /**
    * Indicates whether the text content is part of a unfinished text stream.
@@ -54,7 +68,7 @@ export interface LlmResponse {
    * An optional key-value pair to label an LlmResponse.
    * NOTE: the entire object must be JSON serializable.
    */
-  customMetadata?: {[key: string]: any};
+  customMetadata?: {[key: string]: unknown};
 
   /**
    * The usage metadata of the LlmResponse.
@@ -90,8 +104,8 @@ export interface LlmResponse {
  * @returns The LlmResponse.
  */
 export function createLlmResponse(
-    response: GenerateContentResponse,
-    ): LlmResponse {
+  response: GenerateContentResponse,
+): LlmResponse {
   const usageMetadata = response.usageMetadata;
 
   if (response.candidates && response.candidates.length > 0) {
@@ -100,6 +114,7 @@ export function createLlmResponse(
       return {
         content: candidate.content,
         groundingMetadata: candidate.groundingMetadata,
+        citationMetadata: candidate.citationMetadata,
         usageMetadata: usageMetadata,
         finishReason: candidate.finishReason,
       };
@@ -109,6 +124,7 @@ export function createLlmResponse(
       errorCode: candidate.finishReason,
       errorMessage: candidate.finishMessage,
       usageMetadata: usageMetadata,
+      citationMetadata: candidate.citationMetadata,
       finishReason: candidate.finishReason,
     };
   }

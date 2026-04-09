@@ -7,16 +7,33 @@
 import {ReadonlyContext} from '../agents/readonly_context.js';
 import {LlmRequest} from '../models/llm_request.js';
 
+import {Context} from '../agents/context.js';
 import {BaseTool} from './base_tool.js';
-import {ToolContext} from './tool_context.js';
 
 /**
  * Function to decide whether a tool should be exposed to LLM. Toolset
  * implementer could consider whether to accept such instance in the toolset's
  * constructor and apply the predicate in getTools method.
  */
-export type ToolPredicate =
-    (tool: BaseTool, readonlyContext: ReadonlyContext) => boolean;
+export type ToolPredicate = (
+  tool: BaseTool,
+  readonlyContext: ReadonlyContext,
+) => boolean;
+
+/**
+ * A unique symbol to identify ADK agent classes.
+ * Defined once and shared by all BaseTool instances.
+ */
+const BASE_TOOLSET_SIGNATURE_SYMBOL = Symbol.for('google.adk.baseToolset');
+
+export function isBaseToolset(obj: unknown): obj is BaseToolset {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    BASE_TOOLSET_SIGNATURE_SYMBOL in obj &&
+    obj[BASE_TOOLSET_SIGNATURE_SYMBOL] === true
+  );
+}
 
 /**
  * Base class for toolset.
@@ -24,7 +41,12 @@ export type ToolPredicate =
  * A toolset is a collection of tools that can be used by an agent.
  */
 export abstract class BaseToolset {
-  constructor(readonly toolFilter: ToolPredicate|string[]) {}
+  readonly [BASE_TOOLSET_SIGNATURE_SYMBOL] = true;
+
+  constructor(
+    readonly toolFilter: ToolPredicate | string[],
+    readonly prefix?: string,
+  ) {}
 
   /**
    * Returns the tools that should be exposed to LLM.
@@ -83,7 +105,7 @@ export abstract class BaseToolset {
    * @param llmRequest The outgoing LLM request, mutable this method.
    */
   async processLlmRequest(
-      toolContext: ToolContext,
-      llmRequest: LlmRequest,
-      ): Promise<void> {}
+    toolContext: Context, // eslint-disable-line @typescript-eslint/no-unused-vars
+    llmRequest: LlmRequest, // eslint-disable-line @typescript-eslint/no-unused-vars
+  ): Promise<void> {}
 }

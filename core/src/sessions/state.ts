@@ -14,10 +14,10 @@ export class State {
   static readonly TEMP_PREFIX = 'temp:';
 
   constructor(
-      /** The current value of the state. */
-      private value: Record<string, unknown> = {},
-      /** The delta change to the current value that hasn't been committed. */
-      private delta: Record<string, unknown> = {},
+    /** The current value of the state. */
+    private value: Record<string, unknown> = {},
+    /** The delta change to the current value that hasn't been committed. */
+    private delta: Record<string, unknown> = {},
   ) {}
 
   /**
@@ -28,7 +28,7 @@ export class State {
    * @return The value of the state for the given key, or the default value if
    *     not found.
    */
-  get<T>(key: string, defaultValue?: T): T|undefined {
+  get<T>(key: string, defaultValue?: T): T | undefined {
     if (key in this.delta) {
       return this.delta[key] as T;
     }
@@ -71,8 +71,9 @@ export class State {
    * @param delta The delta to update the state with.
    */
   update(delta: Record<string, unknown>) {
-    this.delta = {...this.delta, ...delta};
-    this.value = {...this.value, ...delta};
+    // This should be revised while working on the parallel tool execution.
+    Object.assign(this.delta, delta);
+    Object.assign(this.value, delta);
   }
 
   /**

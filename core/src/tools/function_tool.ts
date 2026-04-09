@@ -5,43 +5,41 @@
  */
 
 import {FunctionDeclaration, Schema, Type} from '@google/genai';
-import {
-  type infer as zInfer,
-  ZodObject,
-  type ZodRawShape,
-} from 'zod';
+import {z as z3} from 'zod/v3';
+import {z as z4} from 'zod/v4';
 
 import {isZodObject, zodObjectToSchema} from '../utils/simple_zod_to_json.js';
 
+import {Context} from '../agents/context.js';
 import {BaseTool, RunAsyncToolRequest} from './base_tool.js';
-import {ToolContext} from './tool_context.js';
 
 /**
  * Input parameters of the function tool.
  */
 export type ToolInputParameters =
-  | undefined
-  | ZodObject<ZodRawShape>
-  | Schema;
+  | z3.ZodObject<z3.ZodRawShape>
+  | z4.ZodObject<z4.ZodRawShape>
+  | Schema
+  | undefined;
 
 /*
  * The arguments of the function tool.
  */
 export type ToolExecuteArgument<TParameters extends ToolInputParameters> =
-  TParameters extends ZodObject<infer T, infer U, infer V>
-    ? zInfer<ZodObject<T, U, V>>
-    : TParameters extends Schema
-      ? unknown
-      : string;
+  TParameters extends z3.ZodObject<infer T, infer U, infer V>
+    ? z3.infer<z3.ZodObject<T, U, V>>
+    : TParameters extends z4.ZodObject<infer T>
+      ? z4.infer<z4.ZodObject<T>>
+      : TParameters extends Schema
+        ? unknown
+        : string;
 
 /*
  * The function to execute by the tool.
  */
-type ToolExecuteFunction<
-  TParameters extends ToolInputParameters,
-> = (
+export type ToolExecuteFunction<TParameters extends ToolInputParameters> = (
   input: ToolExecuteArgument<TParameters>,
-  tool_context?: ToolContext,
+  tool_context?: Context,
 ) => Promise<unknown> | unknown;
 
 /**
@@ -52,9 +50,7 @@ type ToolExecuteFunction<
  * Note: Unlike Python's ADK, JSDoc on the `execute` function is ignored
  * for tool definition generation.
  */
-export type ToolOptions<
-  TParameters extends ToolInputParameters,
-> = {
+export type ToolOptions<TParameters extends ToolInputParameters> = {
   name?: string;
   description: string;
   parameters?: TParameters;
@@ -63,7 +59,8 @@ export type ToolOptions<
 };
 
 function toSchema<TParameters extends ToolInputParameters>(
-  parameters: TParameters): Schema {
+  parameters: TParameters,
+): Schema {
   if (parameters === undefined) {
     return {type: Type.OBJECT, properties: {}};
   }
@@ -75,9 +72,32 @@ function toSchema<TParameters extends ToolInputParameters>(
   return parameters;
 }
 
+/**
+ * A unique symbol to identify ADK agent classes.
+ * Defined once and shared by all BaseTool instances.
+ */
+const FUNCTION_TOOL_SIGNATURE_SYMBOL = Symbol.for('google.adk.functionTool');
+
+/**
+ * Type guard to check if an object is an instance of BaseTool.
+ * @param obj The object to check.
+ * @returns True if the object is an instance of BaseTool, false otherwise.
+ */
+export function isFunctionTool(obj: unknown): obj is FunctionTool {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    FUNCTION_TOOL_SIGNATURE_SYMBOL in obj &&
+    obj[FUNCTION_TOOL_SIGNATURE_SYMBOL] === true
+  );
+}
+
 export class FunctionTool<
   TParameters extends ToolInputParameters = undefined,
 > extends BaseTool {
+  /** A unique symbol to identify ADK function tool class. */
+  readonly [FUNCTION_TOOL_SIGNATURE_SYMBOL] = true;
+
   // User defined function.
   private readonly execute: ToolExecuteFunction<TParameters>;
   // Typed input parameters.
@@ -120,7 +140,7 @@ export class FunctionTool<
   override async runAsync(req: RunAsyncToolRequest): Promise<unknown> {
     try {
       let validatedArgs: unknown = req.args;
-      if (this.parameters instanceof ZodObject) {
+      if (isZodObject(this.parameters)) {
         validatedArgs = this.parameters.parse(req.args);
       }
       return await this.execute(

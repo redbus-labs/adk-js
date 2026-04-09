@@ -4,25 +4,32 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// TODO - b/436079721: implement traceMergedToolCalls, traceToolCall, tracer.
 import {Content, createUserContent, FunctionCall, Part} from '@google/genai';
-import {isEmpty} from 'lodash';
+import {isEmpty} from 'lodash-es';
 
 import {InvocationContext} from '../agents/invocation_context.js';
 import {createEvent, Event, getFunctionCalls} from '../events/event.js';
 import {mergeEventActions} from '../events/event_actions.js';
 import {BaseTool} from '../tools/base_tool.js';
 import {ToolConfirmation} from '../tools/tool_confirmation.js';
-import {ToolContext} from '../tools/tool_context.js';
 import {randomUUID} from '../utils/env_aware_utils.js';
 import {logger} from '../utils/logger.js';
+import {Context} from './context.js';
 
-import {SingleAfterToolCallback, SingleBeforeToolCallback} from './llm_agent.js';
+import {
+  traceMergedToolCalls,
+  tracer,
+  traceToolCall,
+} from '../telemetry/tracing.js';
+import {
+  SingleAfterToolCallback,
+  SingleBeforeToolCallback,
+} from './llm_agent.js';
 
 const AF_FUNCTION_CALL_ID_PREFIX = 'adk-';
 export const REQUEST_EUC_FUNCTION_CALL_NAME = 'adk_request_credential';
 export const REQUEST_CONFIRMATION_FUNCTION_CALL_NAME =
-    'adk_request_confirmation';
+  'adk_request_confirmation';
 
 // Export these items for testing purposes only
 export const functionsExportedForTestingOnly = {
@@ -42,9 +49,7 @@ export function generateClientFunctionCallId(): string {
  * unique client-side ID to each one that doesn't already have an ID.
  */
 // TODO - b/425992518: consider move into event.ts
-export function populateClientFunctionCallId(
-    modelResponseEvent: Event,
-    ): void {
+export function populateClientFunctionCallId(modelResponseEvent: Event): void {
   const functionCalls = getFunctionCalls(modelResponseEvent);
   if (!functionCalls) {
     return;
@@ -66,12 +71,18 @@ export function populateClientFunctionCallId(
 export function removeClientFunctionCallId(content: Content): void {
   if (content && content.parts) {
     for (const part of content.parts) {
-      if (part.functionCall && part.functionCall.id &&
-          part.functionCall.id.startsWith(AF_FUNCTION_CALL_ID_PREFIX)) {
+      if (
+        part.functionCall &&
+        part.functionCall.id &&
+        part.functionCall.id.startsWith(AF_FUNCTION_CALL_ID_PREFIX)
+      ) {
         part.functionCall.id = undefined;
       }
-      if (part.functionResponse && part.functionResponse.id &&
-          part.functionResponse.id.startsWith(AF_FUNCTION_CALL_ID_PREFIX)) {
+      if (
+        part.functionResponse &&
+        part.functionResponse.id &&
+        part.functionResponse.id.startsWith(AF_FUNCTION_CALL_ID_PREFIX)
+      ) {
         part.functionResponse.id = undefined;
       }
     }
@@ -82,13 +93,17 @@ export function removeClientFunctionCallId(content: Content): void {
  * Returns a set of function call ids of the long running tools.
  */
 export function getLongRunningFunctionCalls(
-    functionCalls: FunctionCall[],
-    toolsDict: Record<string, BaseTool>,
-    ): Set<string> {
+  functionCalls: FunctionCall[],
+  toolsDict: Record<string, BaseTool>,
+): Set<string> {
   const longRunningToolIds = new Set<string>();
   for (const functionCall of functionCalls) {
-    if (functionCall.name && functionCall.name in toolsDict &&
-        toolsDict[functionCall.name].isLongRunning && functionCall.id) {
+    if (
+      functionCall.name &&
+      functionCall.name in toolsDict &&
+      toolsDict[functionCall.name].isLongRunning &&
+      functionCall.id
+    ) {
       longRunningToolIds.add(functionCall.id);
     }
   }
@@ -104,18 +119,20 @@ export function getLongRunningFunctionCalls(
  * event and creates a new function call for each.
  */
 export function generateAuthEvent(
-    invocationContext: InvocationContext,
-    functionResponseEvent: Event,
-    ): Event|undefined {
-  if (!functionResponseEvent.actions?.requestedAuthConfigs ||
-      isEmpty(functionResponseEvent.actions.requestedAuthConfigs)) {
+  invocationContext: InvocationContext,
+  functionResponseEvent: Event,
+): Event | undefined {
+  if (
+    !functionResponseEvent.actions?.requestedAuthConfigs ||
+    isEmpty(functionResponseEvent.actions.requestedAuthConfigs)
+  ) {
     return undefined;
   }
   const parts: Part[] = [];
   const longRunningToolIds = new Set<string>();
   for (const [functionCallId, authConfig] of Object.entries(
-           functionResponseEvent.actions.requestedAuthConfigs,
-           )) {
+    functionResponseEvent.actions.requestedAuthConfigs,
+  )) {
     const requestEucFunctionCall: FunctionCall = {
       name: REQUEST_EUC_FUNCTION_CALL_NAME,
       args: {
@@ -148,12 +165,14 @@ export function generateRequestConfirmationEvent({
   functionCallEvent,
   functionResponseEvent,
 }: {
-  invocationContext: InvocationContext,
-  functionCallEvent: Event,
-  functionResponseEvent: Event
-}): Event|undefined {
-  if (!functionResponseEvent.actions?.requestedToolConfirmations ||
-      isEmpty(functionResponseEvent.actions.requestedToolConfirmations)) {
+  invocationContext: InvocationContext;
+  functionCallEvent: Event;
+  functionResponseEvent: Event;
+}): Event | undefined {
+  if (
+    !functionResponseEvent.actions?.requestedToolConfirmations ||
+    isEmpty(functionResponseEvent.actions.requestedToolConfirmations)
+  ) {
     return;
   }
   const parts: Part[] = [];
@@ -161,10 +180,10 @@ export function generateRequestConfirmationEvent({
   const functionCalls = getFunctionCalls(functionCallEvent);
 
   for (const [functionCallId, toolConfirmation] of Object.entries(
-           functionResponseEvent.actions.requestedToolConfirmations,
-           )) {
+    functionResponseEvent.actions.requestedToolConfirmations,
+  )) {
     const originalFunctionCall =
-        functionCalls.find(call => call.id === functionCallId) ?? undefined;
+      functionCalls.find((call) => call.id === functionCallId) ?? undefined;
     if (!originalFunctionCall) {
       continue;
     }
@@ -187,20 +206,72 @@ export function generateRequestConfirmationEvent({
       parts: parts,
       role: functionResponseEvent.content!.role,
     },
+    actions: functionResponseEvent.actions,
     longRunningToolIds: Array.from(longRunningToolIds),
   });
 }
 
 async function callToolAsync(
-    tool: BaseTool,
-    args: Record<string, any>,
-    toolContext: ToolContext,
-    ): Promise<any> {
-  // TODO - b/436079721: implement [tracer.start_as_current_span]
-  logger.debug(`callToolAsync ${tool.name}`);
-  return await tool.runAsync({args, toolContext});
+  tool: BaseTool,
+  args: Record<string, any>, // eslint-disable-line @typescript-eslint/no-explicit-any
+  toolContext: Context,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
+  return tracer.startActiveSpan(`execute_tool ${tool.name}`, async (span) => {
+    try {
+      logger.debug(`callToolAsync ${tool.name}`);
+      const result = await tool.runAsync({args, toolContext});
+      traceToolCall({
+        tool,
+        args,
+        functionResponseEvent: buildResponseEvent(
+          tool,
+          result,
+          toolContext,
+          toolContext.invocationContext,
+        ),
+      });
+      return result;
+    } finally {
+      span.end();
+    }
+  });
 }
 
+function buildResponseEvent(
+  tool: BaseTool,
+  functionResult: unknown,
+  toolContext: Context,
+  invocationContext: InvocationContext,
+): Event {
+  let responseResult: Record<string, unknown>;
+  if (typeof functionResult !== 'object' || functionResult == null) {
+    responseResult = {result: functionResult};
+  } else {
+    responseResult = functionResult as Record<string, unknown>;
+  }
+
+  const partFunctionResponse: Part = {
+    functionResponse: {
+      name: tool.name,
+      response: responseResult,
+      id: toolContext.functionCallId,
+    },
+  };
+
+  const content: Content = {
+    role: 'user',
+    parts: [partFunctionResponse],
+  };
+
+  return createEvent({
+    invocationId: invocationContext.invocationId,
+    author: invocationContext.agent.name,
+    content: content,
+    actions: toolContext.actions,
+    branch: invocationContext.branch,
+  });
+}
 /**
  * Handles function calls.
  * Runtime behavior to pay attention to:
@@ -222,14 +293,14 @@ export async function handleFunctionCallsAsync({
   filters,
   toolConfirmationDict,
 }: {
-  invocationContext: InvocationContext,
-  functionCallEvent: Event,
-  toolsDict: Record<string, BaseTool>,
-  beforeToolCallbacks: SingleBeforeToolCallback[],
-  afterToolCallbacks: SingleAfterToolCallback[],
-  filters?: Set<string>,
-  toolConfirmationDict?: Record<string, ToolConfirmation>,
-}): Promise<Event|null> {
+  invocationContext: InvocationContext;
+  functionCallEvent: Event;
+  toolsDict: Record<string, BaseTool>;
+  beforeToolCallbacks: SingleBeforeToolCallback[];
+  afterToolCallbacks: SingleAfterToolCallback[];
+  filters?: Set<string>;
+  toolConfirmationDict?: Record<string, ToolConfirmation>;
+}): Promise<Event | null> {
   const functionCalls = getFunctionCalls(functionCallEvent);
   return await handleFunctionCallList({
     invocationContext: invocationContext,
@@ -256,18 +327,18 @@ export async function handleFunctionCallList({
   filters,
   toolConfirmationDict,
 }: {
-  invocationContext: InvocationContext,
-  functionCalls: FunctionCall[],
-  toolsDict: Record<string, BaseTool>,
-  beforeToolCallbacks: SingleBeforeToolCallback[],
-  afterToolCallbacks: SingleAfterToolCallback[],
-  filters?: Set<string>,
-  toolConfirmationDict?: Record<string, ToolConfirmation>,
-}): Promise<Event|null> {
+  invocationContext: InvocationContext;
+  functionCalls: FunctionCall[];
+  toolsDict: Record<string, BaseTool>;
+  beforeToolCallbacks: SingleBeforeToolCallback[];
+  afterToolCallbacks: SingleAfterToolCallback[];
+  filters?: Set<string>;
+  toolConfirmationDict?: Record<string, ToolConfirmation>;
+}): Promise<Event | null> {
   const functionResponseEvents: Event[] = [];
 
   // Note: only function ids INCLUDED in the filters will be executed.
-  const filteredFunctionCalls = functionCalls.filter(functionCall => {
+  const filteredFunctionCalls = functionCalls.filter((functionCall) => {
     return !filters || (functionCall.id && filters.has(functionCall.id));
   });
 
@@ -277,14 +348,12 @@ export async function handleFunctionCallList({
       toolConfirmation = toolConfirmationDict[functionCall.id];
     }
 
-    const {tool, toolContext} = getToolAndContext(
-        {
-          invocationContext,
-          functionCall,
-          toolsDict,
-          toolConfirmation,
-        },
-    );
+    const {tool, toolContext} = getToolAndContext({
+      invocationContext,
+      functionCall,
+      toolsDict,
+      toolConfirmation,
+    });
 
     // TODO - b/436079721: implement [tracer.start_as_current_span]
     logger.debug(`execute_tool ${tool.name}`);
@@ -293,18 +362,19 @@ export async function handleFunctionCallList({
     // Step 1: Check if plugin before_tool_callback overrides the function
     // response.
     let functionResponse = null;
-    let functionResponseError: string|unknown|undefined;
+    let functionResponseError: string | unknown | undefined;
     functionResponse =
-        await invocationContext.pluginManager.runBeforeToolCallback({
-          tool: tool,
-          toolArgs: functionArgs,
-          toolContext: toolContext,
-        });
+      await invocationContext.pluginManager.runBeforeToolCallback({
+        tool: tool,
+        toolArgs: functionArgs,
+        toolContext: toolContext,
+      });
 
     // Step 2: If no overrides are provided from the plugins, further run the
     // canonical callback.
     // TODO - b/425992518: validate the callback response type matches.
-    if (functionResponse == null) {  // Cover both null and undefined
+    if (functionResponse == null) {
+      // Cover both null and undefined
       for (const callback of beforeToolCallbacks) {
         functionResponse = await callback({
           tool: tool,
@@ -318,24 +388,19 @@ export async function handleFunctionCallList({
     }
 
     // Step 3: Otherwise, proceed calling the tool normally.
-    if (functionResponse == null) {  // Cover both null and undefined
+    if (functionResponse == null) {
+      // Cover both null and undefined
       try {
-        functionResponse = await callToolAsync(
-            tool,
-            functionArgs,
-            toolContext,
-        );
+        functionResponse = await callToolAsync(tool, functionArgs, toolContext);
       } catch (e: unknown) {
         if (e instanceof Error) {
           const onToolErrorResponse =
-              await invocationContext.pluginManager.runOnToolErrorCallback(
-                  {
-                    tool: tool,
-                    toolArgs: functionArgs,
-                    toolContext: toolContext,
-                    error: e,
-                  },
-              );
+            await invocationContext.pluginManager.runOnToolErrorCallback({
+              tool: tool,
+              toolArgs: functionArgs,
+              toolContext: toolContext,
+              error: e,
+            });
 
           // Set function response to the result of the error callback and
           // continue execution, do not shortcut
@@ -357,16 +422,17 @@ export async function handleFunctionCallList({
     // Step 4: Check if plugin after_tool_callback overrides the function
     // response.
     let alteredFunctionResponse =
-        await invocationContext.pluginManager.runAfterToolCallback({
-          tool: tool,
-          toolArgs: functionArgs,
-          toolContext: toolContext,
-          result: functionResponse,
-        });
+      await invocationContext.pluginManager.runAfterToolCallback({
+        tool: tool,
+        toolArgs: functionArgs,
+        toolContext: toolContext,
+        result: functionResponse,
+      });
 
     // Step 5: If no overrides are provided from the plugins, further run the
     // canonical after_tool_callbacks.
-    if (alteredFunctionResponse == null) {  // Cover both null and undefined
+    if (alteredFunctionResponse == null) {
+      // Cover both null and undefined
       for (const callback of afterToolCallbacks) {
         alteredFunctionResponse = await callback({
           tool: tool,
@@ -395,7 +461,9 @@ export async function handleFunctionCallList({
     if (functionResponseError) {
       functionResponse = {error: functionResponseError};
     } else if (
-        typeof functionResponse !== 'object' || functionResponse == null) {
+      typeof functionResponse !== 'object' ||
+      functionResponse == null
+    ) {
       functionResponse = {result: functionResponse};
     }
 
@@ -426,42 +494,50 @@ export async function handleFunctionCallList({
   if (!functionResponseEvents.length) {
     return null;
   }
-  const mergedEvent =
-      mergeParallelFunctionResponseEvents(functionResponseEvents);
+  const mergedEvent = mergeParallelFunctionResponseEvents(
+    functionResponseEvents,
+  );
 
   if (functionResponseEvents.length > 1) {
-    // TODO - b/436079721: implement [tracer.start_as_current_span]
-    logger.debug('execute_tool (merged)');
-    // TODO - b/436079721: implement [traceMergedToolCalls]
-    logger.debug('traceMergedToolCalls', {
-      responseEventId: mergedEvent.id,
-      functionResponseEvent: mergedEvent.id,
+    tracer.startActiveSpan('execute_tool (merged)', (span) => {
+      try {
+        logger.debug('execute_tool (merged)');
+        // TODO - b/436079721: implement [traceMergedToolCalls]
+        logger.debug('traceMergedToolCalls', {
+          responseEventId: mergedEvent.id,
+          functionResponseEvent: mergedEvent.id,
+        });
+        traceMergedToolCalls({
+          responseEventId: mergedEvent.id,
+          functionResponseEvent: mergedEvent,
+        });
+      } finally {
+        span.end();
+      }
     });
   }
   return mergedEvent;
 }
 
 // TODO - b/425992518: consider inline, which is much cleaner.
-function getToolAndContext(
-    {
-      invocationContext,
-      functionCall,
-      toolsDict,
-      toolConfirmation,
-    }: {
-      invocationContext: InvocationContext,
-      functionCall: FunctionCall,
-      toolsDict: Record<string, BaseTool>,
-      toolConfirmation?: ToolConfirmation,
-    },
-    ): {tool: BaseTool; toolContext: ToolContext} {
+function getToolAndContext({
+  invocationContext,
+  functionCall,
+  toolsDict,
+  toolConfirmation,
+}: {
+  invocationContext: InvocationContext;
+  functionCall: FunctionCall;
+  toolsDict: Record<string, BaseTool>;
+  toolConfirmation?: ToolConfirmation;
+}): {tool: BaseTool; toolContext: Context} {
   if (!functionCall.name || !(functionCall.name in toolsDict)) {
     throw new Error(
-        `Function ${functionCall.name} is not found in the toolsDict.`,
+      `Function ${functionCall.name} is not found in the toolsDict.`,
     );
   }
 
-  const toolContext = new ToolContext({
+  const toolContext = new Context({
     invocationContext: invocationContext,
     functionCallId: functionCall.id || undefined,
     toolConfirmation,
@@ -477,8 +553,8 @@ function getToolAndContext(
  */
 // TODO - b/425992518: may not need export. Can be conslidated into Event.
 export function mergeParallelFunctionResponseEvents(
-    functionResponseEvents: Event[],
-    ): Event {
+  functionResponseEvents: Event[],
+): Event {
   if (!functionResponseEvents.length) {
     throw new Error('No function response events provided.');
   }
@@ -495,7 +571,9 @@ export function mergeParallelFunctionResponseEvents(
 
   const baseEvent = functionResponseEvents[0];
 
-  const actionsList = functionResponseEvents.map(event => event.actions || {});
+  const actionsList = functionResponseEvents.map(
+    (event) => event.actions || {},
+  );
   const mergedActions = mergeEventActions(actionsList);
 
   return createEvent({

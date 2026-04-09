@@ -7,7 +7,7 @@
 import {Content, FunctionDeclaration, Type} from '@google/genai';
 
 import {BaseAgent} from '../agents/base_agent.js';
-import {LlmAgent} from '../agents/llm_agent.js';
+import {isLlmAgent} from '../agents/llm_agent.js';
 import {Event} from '../events/event.js';
 import {InMemoryMemoryService} from '../memory/in_memory_memory_service.js';
 import {Runner} from '../runner/runner.js';
@@ -16,7 +16,6 @@ import {GoogleLLMVariant} from '../utils/variant_utils.js';
 
 import {BaseTool, RunAsyncToolRequest} from './base_tool.js';
 import {ForwardingArtifactService} from './forwarding_artifact_service.js';
-import {ToolContext} from './tool_context.js';
 
 /**
  * The configuration of the agent tool.
@@ -34,6 +33,26 @@ export interface AgentToolConfig {
 }
 
 /**
+ * A unique symbol to identify ADK agent classes.
+ * Defined once and shared by all BaseTool instances.
+ */
+const AGENT_TOOL_SIGNATURE_SYMBOL = Symbol.for('google.adk.agentTool');
+
+/**
+ * Type guard to check if an object is an instance of BaseTool.
+ * @param obj The object to check.
+ * @returns True if the object is an instance of BaseTool, false otherwise.
+ */
+export function isAgentTool(obj: unknown): obj is AgentTool {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    AGENT_TOOL_SIGNATURE_SYMBOL in obj &&
+    obj[AGENT_TOOL_SIGNATURE_SYMBOL] === true
+  );
+}
+
+/**
  * A tool that wraps an agent.
  *
  * This tool allows an agent to be called as a tool within a larger
@@ -43,13 +62,18 @@ export interface AgentToolConfig {
  *  @param config: The configuration of the agent tool.
  */
 export class AgentTool extends BaseTool {
+  /** A unique symbol to identify ADK agent tool class. */
+  readonly [AGENT_TOOL_SIGNATURE_SYMBOL] = true;
+
   private readonly agent: BaseAgent;
 
   private readonly skipSummarization: boolean;
 
   constructor(config: AgentToolConfig) {
-    super(
-        {name: config.agent.name, description: config.agent.description || ''});
+    super({
+      name: config.agent.name,
+      description: config.agent.description || '',
+    });
     this.agent = config.agent;
     this.skipSummarization = config.skipSummarization || false;
   }
@@ -57,7 +81,7 @@ export class AgentTool extends BaseTool {
   override _getDeclaration(): FunctionDeclaration {
     let declaration: FunctionDeclaration;
 
-    if (this.agent instanceof LlmAgent && this.agent.inputSchema) {
+    if (isLlmAgent(this.agent) && this.agent.inputSchema) {
       declaration = {
         name: this.name,
         description: this.description,
@@ -83,31 +107,33 @@ export class AgentTool extends BaseTool {
     }
 
     if (this.apiVariant !== GoogleLLMVariant.GEMINI_API) {
-      const hasOutputSchema =
-          this.agent instanceof LlmAgent && this.agent.outputSchema;
-      declaration.response =
-          hasOutputSchema ? {type: Type.OBJECT} : {type: Type.STRING};
+      const hasOutputSchema = isLlmAgent(this.agent) && this.agent.outputSchema;
+      declaration.response = hasOutputSchema
+        ? {type: Type.OBJECT}
+        : {type: Type.STRING};
     }
 
     return declaration;
   }
 
-  override async runAsync({args, toolContext}: RunAsyncToolRequest):
-      Promise<unknown> {
+  override async runAsync({
+    args,
+    toolContext,
+  }: RunAsyncToolRequest): Promise<unknown> {
     if (this.skipSummarization) {
       toolContext.actions.skipSummarization = true;
     }
 
-    const hasInputSchema =
-        this.agent instanceof LlmAgent && this.agent.inputSchema;
+    const hasInputSchema = isLlmAgent(this.agent) && this.agent.inputSchema;
     const content: Content = {
       role: 'user',
       parts: [
         {
           // TODO(b/425992518): Should be validated. Consider similar
           // logic to one we have in Python ADK.
-          text: hasInputSchema ? JSON.stringify(args) :
-                                 args['request'] as string,
+          text: hasInputSchema
+            ? JSON.stringify(args)
+            : (args['request'] as string),
         },
       ],
     };
@@ -116,18 +142,23 @@ export class AgentTool extends BaseTool {
       appName: this.agent.name,
       agent: this.agent,
       artifactService: new ForwardingArtifactService(toolContext),
-      sessionService: new InMemorySessionService(),
-      memoryService: new InMemoryMemoryService(),
+      sessionService:
+        toolContext.invocationContext.sessionService ??
+        new InMemorySessionService(),
+      memoryService:
+        toolContext.invocationContext.memoryService ??
+        new InMemoryMemoryService(),
       credentialService: toolContext.invocationContext.credentialService,
     });
 
     const session = await runner.sessionService.createSession({
       appName: this.agent.name,
-      userId: 'tmp_user',
+      userId: toolContext.invocationContext.userId,
+      sessionId: toolContext.invocationContext.session.id,
       state: toolContext.state.toRecord(),
     });
 
-    let lastEvent: Event|undefined;
+    let lastEvent: Event | undefined;
     for await (const event of runner.runAsync({
       userId: session.userId,
       sessionId: session.id,
@@ -144,12 +175,11 @@ export class AgentTool extends BaseTool {
       return '';
     }
 
-    const hasOutputSchema =
-        this.agent instanceof LlmAgent && this.agent.outputSchema;
-
-    const mergedText = lastEvent.content.parts.map((part) => part.text)
-                           .filter((text) => text)
-                           .join('\n');
+    const hasOutputSchema = isLlmAgent(this.agent) && this.agent.outputSchema;
+    const mergedText = lastEvent.content.parts
+      .map((part) => part.text)
+      .filter((text) => text)
+      .join('\n');
 
     // TODO - b/425992518: In case of output schema, the output should be
     // validated. Consider similar logic to one we have in Python ADK.

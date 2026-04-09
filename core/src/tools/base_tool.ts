@@ -9,21 +9,21 @@ import {FunctionDeclaration, Tool} from '@google/genai';
 import {LlmRequest} from '../models/llm_request.js';
 import {getGoogleLlmVariant} from '../utils/variant_utils.js';
 
-import {ToolContext} from './tool_context.js';
+import {Context} from '../agents/context.js';
 
 /**
  * The parameters for `runAsync`.
  */
 export interface RunAsyncToolRequest {
   args: Record<string, unknown>;
-  toolContext: ToolContext;
+  toolContext: Context;
 }
 
 /**
  * The parameters for `processLlmRequest`.
  */
 export interface ToolProcessLlmRequest {
-  toolContext: ToolContext;
+  toolContext: Context;
   llmRequest: LlmRequest;
 }
 
@@ -37,9 +37,32 @@ export interface BaseToolParams {
 }
 
 /**
+ * A unique symbol to identify ADK agent classes.
+ * Defined once and shared by all BaseTool instances.
+ */
+const BASE_TOOL_SIGNATURE_SYMBOL = Symbol.for('google.adk.baseTool');
+
+/**
+ * Type guard to check if an object is an instance of BaseTool.
+ * @param obj The object to check.
+ * @returns True if the object is an instance of BaseTool, false otherwise.
+ */
+export function isBaseTool(obj: unknown): obj is BaseTool {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    BASE_TOOL_SIGNATURE_SYMBOL in obj &&
+    obj[BASE_TOOL_SIGNATURE_SYMBOL] === true
+  );
+}
+
+/**
  * The base class for all tools.
  */
 export abstract class BaseTool {
+  /** A unique symbol to identify ADK base tool class. */
+  readonly [BASE_TOOL_SIGNATURE_SYMBOL] = true;
+
   readonly name: string;
   readonly description: string;
   readonly isLongRunning: boolean;
@@ -68,7 +91,7 @@ export abstract class BaseTool {
    * @return The FunctionDeclaration of this tool, or undefined if it doesn't
    *     need to be added to LlmRequest.config.
    */
-  _getDeclaration(): FunctionDeclaration|undefined {
+  _getDeclaration(): FunctionDeclaration | undefined {
     return undefined;
   }
 
@@ -94,11 +117,14 @@ export abstract class BaseTool {
    *
    * @param request The request to process the LLM request.
    */
-  async processLlmRequest({toolContext, llmRequest}: ToolProcessLlmRequest):
-      Promise<void> {
+  async processLlmRequest({llmRequest}: ToolProcessLlmRequest): Promise<void> {
     const functionDeclaration = this._getDeclaration();
     if (!functionDeclaration) {
       return;
+    }
+
+    if (this.name in llmRequest.toolsDict) {
+      throw new Error(`Duplicate tool name: ${this.name}`);
     }
 
     llmRequest.toolsDict[this.name] = this;
@@ -127,9 +153,10 @@ export abstract class BaseTool {
   }
 }
 
-function findToolWithFunctionDeclarations(llmRequest: LlmRequest): Tool|
-    undefined {
-  return (llmRequest.config?.tools ||
-          []).find(tool => 'functionDeclarations' in tool) as Tool |
-      undefined;
+function findToolWithFunctionDeclarations(
+  llmRequest: LlmRequest,
+): Tool | undefined {
+  return (llmRequest.config?.tools || []).find(
+    (tool) => 'functionDeclarations' in tool,
+  ) as Tool | undefined;
 }

@@ -4,9 +4,18 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 import * as path from 'node:path';
-import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
+import {afterEach, beforeEach, describe, expect, it, Mock, vi} from 'vitest';
 
-import {getTempDir, isFile, isFolderExists, loadFileData, saveToFile, tryToFindFileRecursively,} from '../../src/utils/file_utils.js';
+import {
+  getTempDir,
+  isFile,
+  isFileExists,
+  isFolderExists,
+  listFiles,
+  loadFileData,
+  saveToFile,
+  tryToFindFileRecursively,
+} from '../../src/utils/file_utils.js';
 
 vi.mock('node:fs/promises', async () => {
   return {
@@ -15,6 +24,9 @@ vi.mock('node:fs/promises', async () => {
     unlink: vi.fn(),
     access: vi.fn(),
     stat: vi.fn(),
+    mkdir: vi.fn(),
+    rm: vi.fn(),
+    readdir: vi.fn(),
   };
 });
 
@@ -25,24 +37,43 @@ vi.mock('node:os', async () => {
 });
 
 describe('file_utils', () => {
-  let fsPromises: any;
-  let osMock: any;
+  let fsPromises: {
+    readFile: Mock;
+    writeFile: Mock;
+    unlink: Mock;
+    access: Mock;
+    stat: Mock;
+    mkdir: Mock;
+    rm: Mock;
+    readdir: Mock;
+  };
+  let osMock: {tmpdir: Mock};
 
   const testPath = '/tmp/test.txt';
   const testContent = 'Hello, world!';
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    fsPromises = await import('node:fs/promises');
-    osMock = await import('node:os');
+    fsPromises = (await import('node:fs/promises')) as unknown as {
+      readFile: Mock;
+      writeFile: Mock;
+      unlink: Mock;
+      access: Mock;
+      stat: Mock;
+      mkdir: Mock;
+      rm: Mock;
+      readdir: Mock;
+    };
+    osMock = (await import('node:os')) as unknown as {tmpdir: Mock};
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('isFolderExists returns true when access resolves', async () => {
+  it('isFolderExists returns true when access resolves and is directory', async () => {
     fsPromises.access.mockResolvedValue(undefined);
+    fsPromises.stat.mockResolvedValue({isDirectory: () => true});
     await expect(isFolderExists('/some/dir')).resolves.toBe(true);
   });
 
@@ -76,7 +107,7 @@ describe('file_utils', () => {
     fsPromises.writeFile.mockResolvedValue(undefined);
     await expect(saveToFile(testPath, testContent)).resolves.toBeUndefined();
     expect(fsPromises.writeFile).toHaveBeenCalledWith(testPath, testContent, {
-      encoding: 'utf-8'
+      encoding: 'utf-8',
     });
   });
 
@@ -84,12 +115,11 @@ describe('file_utils', () => {
     const data = {a: 1};
     fsPromises.writeFile.mockResolvedValue(undefined);
     await expect(saveToFile('/tmp/data.json', data)).resolves.toBeUndefined();
-    expect(fsPromises.writeFile)
-        .toHaveBeenCalledWith(
-            '/tmp/data.json',
-            JSON.stringify(data, null, 2),
-            {encoding: 'utf-8'},
-        );
+    expect(fsPromises.writeFile).toHaveBeenCalledWith(
+      '/tmp/data.json',
+      JSON.stringify(data, null, 2),
+      {encoding: 'utf-8'},
+    );
   });
 
   it('getTempDir uses os.tmpdir and optional prefix and Date.now', () => {
@@ -101,9 +131,9 @@ describe('file_utils', () => {
   });
 
   it('tryToFindFileRecursively finds a file in a parent folder', async () => {
-    fsPromises.access.mockImplementation((p: string) => {
-      if (p.endsWith(path.join('/a', 'target.txt'))) {
-        return Promise.resolve();
+    fsPromises.stat.mockImplementation((p: string) => {
+      if (p === path.join('/a', 'target.txt')) {
+        return Promise.resolve({isFile: () => true});
       }
       return Promise.reject(new Error('not found'));
     });
@@ -112,10 +142,26 @@ describe('file_utils', () => {
     expect(found).toBe(path.join('/a', 'target.txt'));
   });
 
-  it('tryToFindFileRecursively throws when file not found within maxIterations',
-     async () => {
-       fsPromises.access.mockRejectedValue(new Error('not found'));
-       await expect(tryToFindFileRecursively('/a/b/c', 'target.txt', 2))
-           .rejects.toThrow(/No target.txt found/);
-     });
+  it('tryToFindFileRecursively throws when file not found within maxIterations', async () => {
+    fsPromises.stat.mockRejectedValue(new Error('not found'));
+    await expect(
+      tryToFindFileRecursively('/a/b/c', 'target.txt', 2),
+    ).rejects.toThrow(/No target.txt found/);
+  });
+
+  it('listFiles returns entries', async () => {
+    const files = ['a.txt', 'b.txt'];
+    fsPromises.readdir.mockResolvedValue(files);
+    await expect(listFiles('/some/dir')).resolves.toEqual(files);
+  });
+
+  it('isFileExists returns true for files', async () => {
+    fsPromises.stat.mockResolvedValue({isFile: () => true});
+    await expect(isFileExists('/file.txt')).resolves.toBe(true);
+  });
+
+  it('isFileExists returns false for directories', async () => {
+    fsPromises.stat.mockResolvedValue({isFile: () => false});
+    await expect(isFileExists('/dir')).resolves.toBe(false);
+  });
 });
