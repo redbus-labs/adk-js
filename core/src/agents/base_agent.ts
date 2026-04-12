@@ -313,12 +313,19 @@ export abstract class BaseAgent {
   protected async handleBeforeAgentCallback(
     invocationContext: InvocationContext,
   ): Promise<Event | undefined> {
-    if (this.beforeAgentCallback.length === 0) {
-      return undefined;
-    }
-
     const callbackContext = new Context({invocationContext});
-    for (const callback of this.beforeAgentCallback) {
+
+    const callbacks = [
+      async (ctx: Context) => {
+        return await invocationContext.pluginManager.runBeforeAgentCallback({
+          agent: this,
+          callbackContext: ctx,
+        });
+      },
+      ...this.beforeAgentCallback,
+    ];
+
+    for (const callback of callbacks) {
       const content = await callback(callbackContext);
 
       if (content) {
@@ -356,12 +363,19 @@ export abstract class BaseAgent {
   protected async handleAfterAgentCallback(
     invocationContext: InvocationContext,
   ): Promise<Event | undefined> {
-    if (this.afterAgentCallback.length === 0) {
-      return undefined;
-    }
-
     const callbackContext = new Context({invocationContext});
-    for (const callback of this.afterAgentCallback) {
+
+    const callbacks = [
+      async (ctx: Context) => {
+        return await invocationContext.pluginManager.runAfterAgentCallback({
+          agent: this,
+          callbackContext: ctx,
+        });
+      },
+      ...this.afterAgentCallback,
+    ];
+
+    for (const callback of callbacks) {
       const content = await callback(callbackContext);
 
       if (content) {
