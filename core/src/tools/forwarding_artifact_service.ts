@@ -7,9 +7,16 @@
 import {Part} from '@google/genai';
 
 import {InvocationContext} from '../agents/invocation_context.js';
-import {BaseArtifactService, DeleteArtifactRequest, ListArtifactKeysRequest, ListVersionsRequest, LoadArtifactRequest, SaveArtifactRequest,} from '../artifacts/base_artifact_service.js';
+import {
+  ArtifactVersion,
+  BaseArtifactService,
+  DeleteArtifactRequest,
+  ListVersionsRequest,
+  LoadArtifactRequest,
+  SaveArtifactRequest,
+} from '../artifacts/base_artifact_service.js';
 
-import {ToolContext} from './tool_context.js';
+import {Context} from '../agents/context.js';
 
 /**
  * Artifact service that forwards to the parent tool context.
@@ -17,7 +24,7 @@ import {ToolContext} from './tool_context.js';
 export class ForwardingArtifactService implements BaseArtifactService {
   private readonly invocationContext: InvocationContext;
 
-  constructor(private readonly toolContext: ToolContext) {
+  constructor(private readonly toolContext: Context) {
     this.invocationContext = toolContext.invocationContext;
   }
 
@@ -27,11 +34,11 @@ export class ForwardingArtifactService implements BaseArtifactService {
     return this.toolContext.saveArtifact(request.filename, request.artifact);
   }
 
-  async loadArtifact(request: LoadArtifactRequest): Promise<Part|undefined> {
+  async loadArtifact(request: LoadArtifactRequest): Promise<Part | undefined> {
     return this.toolContext.loadArtifact(request.filename, request.version);
   }
 
-  async listArtifactKeys(request: ListArtifactKeysRequest): Promise<string[]> {
+  async listArtifactKeys(): Promise<string[]> {
     return this.toolContext.listArtifacts();
   }
 
@@ -41,7 +48,8 @@ export class ForwardingArtifactService implements BaseArtifactService {
     }
 
     return this.toolContext.invocationContext.artifactService.deleteArtifact(
-        request);
+      request,
+    );
   }
 
   async listVersions(request: ListVersionsRequest): Promise<number[]> {
@@ -50,6 +58,31 @@ export class ForwardingArtifactService implements BaseArtifactService {
     }
 
     return this.toolContext.invocationContext.artifactService.listVersions(
-        request);
+      request,
+    );
+  }
+
+  listArtifactVersions(
+    request: ListVersionsRequest,
+  ): Promise<ArtifactVersion[]> {
+    if (!this.toolContext.invocationContext.artifactService) {
+      throw new Error('Artifact service is not initialized.');
+    }
+
+    return this.toolContext.invocationContext.artifactService.listArtifactVersions(
+      request,
+    );
+  }
+
+  getArtifactVersion(
+    request: LoadArtifactRequest,
+  ): Promise<ArtifactVersion | undefined> {
+    if (!this.toolContext.invocationContext.artifactService) {
+      throw new Error('Artifact service is not initialized.');
+    }
+
+    return this.toolContext.invocationContext.artifactService.getArtifactVersion(
+      request,
+    );
   }
 }

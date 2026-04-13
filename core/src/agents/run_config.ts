@@ -4,7 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {AudioTranscriptionConfig, Modality, ProactivityConfig, RealtimeInputConfig, SpeechConfig} from '@google/genai';
+import {
+  AudioTranscriptionConfig,
+  Modality,
+  ProactivityConfig,
+  RealtimeInputConfig,
+  SpeechConfig,
+} from '@google/genai';
 
 import {logger} from '../utils/logger.js';
 
@@ -87,6 +93,12 @@ export interface RunConfig {
    *   - Less than or equal to 0: This allows for unbounded number of llm calls.
    */
   maxLlmCalls?: number;
+
+  /**
+   * If true, the agent loop will suspend on ANY tool call, allowing the client
+   * to intercept and execute tools (Client-Side Tool Execution).
+   */
+  pauseOnToolCalls?: boolean;
 }
 
 export function createRunConfig(params: Partial<RunConfig> = {}) {
@@ -96,6 +108,7 @@ export function createRunConfig(params: Partial<RunConfig> = {}) {
     enableAffectiveDialog: false,
     streamingMode: StreamingMode.NONE,
     maxLlmCalls: validateMaxLlmCalls(params.maxLlmCalls || 500),
+    pauseOnToolCalls: false,
     ...params,
   };
 }
@@ -103,13 +116,14 @@ export function createRunConfig(params: Partial<RunConfig> = {}) {
 function validateMaxLlmCalls(value: number): number {
   if (value > Number.MAX_SAFE_INTEGER) {
     throw new Error(
-        `maxLlmCalls should be less than ${Number.MAX_SAFE_INTEGER}.`,
+      `maxLlmCalls should be less than ${Number.MAX_SAFE_INTEGER}.`,
     );
   }
 
   if (value <= 0) {
     logger.warn(
-        'maxLlmCalls is less than or equal to 0. This will result in no enforcement on total number of llm calls that will be made for a run. This may not be ideal, as this could result in a never ending communication between the model and the agent in certain cases.');
+      'maxLlmCalls is less than or equal to 0. This will result in no enforcement on total number of llm calls that will be made for a run. This may not be ideal, as this could result in a never ending communication between the model and the agent in certain cases.',
+    );
   }
   return value;
 }

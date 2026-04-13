@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import {cloneDeep} from 'lodash-es';
+
 import {Event} from '../events/event.js';
 
 import {Session} from './session.js';
@@ -111,7 +113,28 @@ export abstract class BaseSessionService {
    * @return A promise that resolves to the session instance or undefined if not
    *     found.
    */
-  abstract getSession(request: GetSessionRequest): Promise<Session|undefined>;
+  abstract getSession(request: GetSessionRequest): Promise<Session | undefined>;
+
+  /**
+   * Gets a session or creates one if it doesn't exist.
+   *
+   * @param request The request to get or create a session.
+   * @return A promise that resolves to the session instance.
+   */
+  async getOrCreateSession(request: CreateSessionRequest): Promise<Session> {
+    if (!request.sessionId) {
+      return this.createSession(request);
+    }
+    const session = await this.getSession({
+      appName: request.appName,
+      userId: request.userId,
+      sessionId: request.sessionId,
+    });
+    if (session) {
+      return session;
+    }
+    return this.createSession(request);
+  }
 
   /**
    * Lists sessions for a user.
@@ -119,8 +142,9 @@ export abstract class BaseSessionService {
    * @param request The request to list sessions.
    * @return A promise that resolves to a list of sessions for the user.
    */
-  abstract listSessions(request: ListSessionsRequest):
-      Promise<ListSessionsResponse>;
+  abstract listSessions(
+    request: ListSessionsRequest,
+  ): Promise<ListSessionsResponse>;
 
   /**
    * Deletes a session.
@@ -140,6 +164,8 @@ export abstract class BaseSessionService {
     if (event.partial) {
       return event;
     }
+
+    event = trimTempDeltaState(event);
 
     this.updateSessionState({session, event});
     session.events.push(event);
@@ -163,4 +189,47 @@ export abstract class BaseSessionService {
       session.state[key] = value;
     }
   }
+}
+
+/**
+ * Removes temporary state delta keys from the event.
+ */
+export function trimTempDeltaState(event: Event): Event {
+  if (!event.actions || !event.actions.stateDelta) {
+    return event;
+  }
+
+  const stateDelta = event.actions.stateDelta;
+  const filteredStateDelta: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(stateDelta)) {
+    if (!key.startsWith(State.TEMP_PREFIX)) {
+      filteredStateDelta[key] = value;
+    }
+  }
+
+  event.actions.stateDelta = filteredStateDelta;
+  return event;
+}
+
+/**
+ * Merges app state, user state, and session state.
+ *
+ * @param appState The application state.
+ * @param userState The user state.
+ * @param sessionState The session state.
+ * @return The merged state.
+ */
+export function mergeStates(
+  appState: Record<string, unknown> = {},
+  userState: Record<string, unknown> = {},
+  sessionState: Record<string, unknown> = {},
+) {
+  const merged = cloneDeep(sessionState);
+  for (const [k, v] of Object.entries(appState)) {
+    merged[State.APP_PREFIX + k] = v;
+  }
+  for (const [k, v] of Object.entries(userState)) {
+    merged[State.USER_PREFIX + k] = v;
+  }
+  return merged;
 }

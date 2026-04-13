@@ -1,6 +1,6 @@
 {
   "name": "@google/adk-devtools",
-  "version": "0.2.1",
+  "version": "0.6.2",
   "description": "Google ADK JS Development Tools",
   "author": "Google",
   "license": "Apache-2.0",
@@ -14,20 +14,21 @@
     "LICENSE",
     "dist"
   ],
-  "type": "commonjs",
-  "main": "./dist/cli/cli.cjs",
+  "type": "module",
+  "module": "./dist/cli_entrypoint.mjs",
   "bin": {
-    "adk": "./dist/cli/cli.cjs"
+    "adk": "./dist/cli_entrypoint.mjs"
   },
   "exports": {
     ".": {
-      "types": "./dist/cli/cli.d.ts",
-      "require": "./dist/cli/cli.cjs"
+      "types": "./dist/cli_entrypoint.d.ts",
+      "import": "./dist/cli_entrypoint.mjs"
     }
   },
   "scripts": {
     "clean": "rm -rf dist",
     "clean:all": "npm run clean && rm -rf node_modules",
+    "rebuild": "npm run clean:all && npm install && npm run build",
     "build": "tsc --emitDeclarationOnly && node ./build.js",
     "test": "vitest",
     "lint": "eslint 'src/**/*.ts'",
@@ -49,13 +50,23 @@
   },
   "dependencies": {
     "@clack/prompts": "^0.11.0",
-    "@google/adk": "^0.2.1",
+    "@google/adk": "^0.6.1",
+    "camelcase-keys": "^6.2.2",
+    "@mikro-orm/mariadb": "^6.6.6",
+    "@mikro-orm/mssql": "^6.6.6",
+    "@mikro-orm/mysql": "^6.6.6",
+    "@mikro-orm/postgresql": "^6.6.6",
+    "@mikro-orm/sqlite": "^6.6.6",
     "commander": "^14.0.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "esbuild": "^0.25.9",
+    "esbuild-shim-plugin": "^1.0.3",
     "express": "^4.21.2",
+    "fast-glob": "^3.3.3",
     "ts-graphviz": "^1.0.1",
-    "zod": "^3.22.4"
+    "winston": "^3.19.0",
+    "yaml": "^2.8.3",
+    "zod": "^4.2.1"
   }
 }

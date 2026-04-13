@@ -1,6 +1,6 @@
 {
   "name": "adk",
-  "version": "0.2.1",
+  "version": "0.6.1",
   "description": "Google ADK JS",
   "author": "Google",
   "license": "Apache-2.0",
@@ -10,31 +10,67 @@
     "url": "https://github.com/google/adk-js"
   },
   "scripts": {
+    "publish:custom": "node --env-file=.env scripts/publish-custom.mjs --core-only",
+    "publish:custom:all": "node --env-file=.env scripts/publish-custom.mjs --all",
     "build": "npm run build --workspaces",
     "clean": "npm run clean --workspaces",
-    "clean:all": "rm -rf ./node_modules && npm run clean:all --workspaces",
-    "lint": "eslint **/*.ts",
-    "lint:fix": "eslint --fix **/*.ts",
-    "format": "prettier **/*.ts --write",
-    "test": "vitest"
+    "clean:all": "rm package-lock.json && rm -rf ./node_modules && npm run clean:all --workspaces",
+    "rebuild": "npm run clean:all && npm install && npm run build",
+    "ts:check": "tsc --noEmit",
+    "lint": "eslint **/**.ts",
+    "lint:fix": "eslint --fix **/**.ts",
+    "format": "prettier **/**.ts --write",
+    "format:check": "prettier **/**.ts --check",
+    "docs": "npm run docs:clean && npm run docs:generate && npm run docs:serve",
+    "docs:clean": "rm -rf ./api-reference",
+    "docs:generate": "typedoc",
+    "docs:serve": "http-server api-reference/typescript",
+    "docs:check": "typedoc --emit none --treatWarningsAsErrors",
+    "test": "vitest --project unit:core --project unit:dev --project integration --project e2e",
+    "test:unit": "vitest --project unit:core --project unit:dev",
+    "test:integration": "vitest --project integration",
+    "test:e2e": "vitest --project e2e",
+    "test:cross-language": "vitest --project cross-language",
+    "test:coverage": "vitest run --project unit:core --project unit:dev --project integration --project e2e --coverage",
+    "prepare": "husky"
   },
   "workspaces": [
     "core",
     "dev"
   ],
   "devDependencies": {
-    "@google/genai": "^1.33.0",
     "@eslint/js": "^9.37.0",
+    "@secretlint/secretlint-rule-pattern": "^11.3.1",
+    "@secretlint/secretlint-rule-preset-recommend": "^11.3.1",
     "@types/node": "^20.12.7",
+    "@vitest/coverage-v8": "^3.2.4",
     "concurrently": "^9.2.1",
     "esbuild": "^0.25.9",
     "eslint": "^9.37.0",
     "globals": "^16.4.0",
     "gts": "^5.3.1",
+    "http-server": "^14.1.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
     "prettier": "^3.6.2",
     "prettier-plugin-organize-imports": "^4.3.0",
+    "secretlint": "^11.3.1",
+    "typedoc": "^0.28.16",
+    "typedoc-theme-fresh": "^0.2.3",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.46.0",
     "vitest": "^3.2.4"
+  },
+  "lint-staged": {
+    "*": [
+      "secretlint"
+    ],
+    "**/*.{js,ts}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "**/*.{json,md}": [
+      "prettier --write"
+    ]
   }
 }

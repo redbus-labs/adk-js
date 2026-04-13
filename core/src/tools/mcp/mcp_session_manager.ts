@@ -5,8 +5,14 @@
  */
 
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
-import {StdioClientTransport, StdioServerParameters} from '@modelcontextprotocol/sdk/client/stdio.js';
-import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {
+  StdioClientTransport,
+  StdioServerParameters,
+} from '@modelcontextprotocol/sdk/client/stdio.js';
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPClientTransportOptions,
+} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 /**
  * Defines the parameters for establishing a connection to an MCP server using
@@ -16,7 +22,7 @@ import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/st
 export interface StdioConnectionParams {
   type: 'StdioConnectionParams';
   serverParams: StdioServerParameters;
-  timeout?: Number;
+  timeout?: number;
 }
 
 /**
@@ -32,17 +38,24 @@ export interface StdioConnectionParams {
 export interface StreamableHTTPConnectionParams {
   type: 'StreamableHTTPConnectionParams';
   url: string;
+  /**
+   * @deprecated
+   * Use transportOptions.requestInit.headers instead.
+   * This field will be ignored if transportOptions is provided even if no headers are specified in transportOptions.
+   */
   header?: Record<string, unknown>;
-  timeout?: Number;
-  sseReadTimeout?: Number;
+  timeout?: number;
+  sseReadTimeout?: number;
   terminateOnClose?: boolean;
+  transportOptions?: StreamableHTTPClientTransportOptions;
 }
 
 /**
  * A union of all supported MCP connection parameter types.
  */
 export type MCPConnectionParams =
-    StdioConnectionParams|StreamableHTTPConnectionParams;
+  | StdioConnectionParams
+  | StreamableHTTPConnectionParams;
 
 /**
  * Manages Model Context Protocol (MCP) client sessions.
@@ -70,21 +83,34 @@ export class MCPSessionManager {
     switch (this.connectionParams.type) {
       case 'StdioConnectionParams':
         await client.connect(
-            new StdioClientTransport(this.connectionParams.serverParams));
+          new StdioClientTransport(this.connectionParams.serverParams),
+        );
         break;
-      case 'StreamableHTTPConnectionParams':
-        const transportOptions = this.connectionParams.header ? {
-          requestInit: {
-            headers: this.connectionParams.header as Record<string, string>
-          }
-        } : undefined;
-        await client.connect(new StreamableHTTPClientTransport(
-            new URL(this.connectionParams.url), transportOptions));
+      case 'StreamableHTTPConnectionParams': {
+        const options = this.connectionParams.transportOptions ?? {};
+
+        if (
+          !options.requestInit &&
+          this.connectionParams.header !== undefined
+        ) {
+          options.requestInit = {
+            headers: this.connectionParams.header as Record<string, string>,
+          };
+        }
+
+        await client.connect(
+          new StreamableHTTPClientTransport(
+            new URL(this.connectionParams.url),
+            options,
+          ),
+        );
         break;
-      default:
+      }
+      default: {
         // Triggers compile error if a case is missing.
         const _exhaustiveCheck: never = this.connectionParams;
         break;
+      }
     }
 
     return client;
