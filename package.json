@@ -10,6 +10,8 @@
     "url": "https://github.com/google/adk-js"
   },
   "scripts": {
+    "publish:custom": "node --env-file=.env scripts/publish-custom.mjs --core-only",
+    "publish:custom:all": "node --env-file=.env scripts/publish-custom.mjs --all",
     "build": "npm run build --workspaces",
     "clean": "npm run clean --workspaces",
     "clean:all": "rm package-lock.json && rm -rf ./node_modules && npm run clean:all --workspaces",
